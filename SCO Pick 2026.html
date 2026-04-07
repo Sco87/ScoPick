@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Scanner Industriel Mobile</title>
+    <script src="https://unpkg.com/html5-qrcode"></script>
+    <script src="https://unpkg.com/tesseract.js@4.0.2/dist/tesseract.min.js"></script>
+    
+    <style>
+        body { font-family: -apple-system, sans-serif; background: #f0f2f5; margin: 0; padding: 15px; display: flex; flex-direction: column; align-items: center; }
+        .container { width: 100%; max-width: 450px; background: white; padding: 20px; border-radius: 20px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); box-sizing: border-box; }
+        
+        h2 { font-size: 1.2rem; text-align: center; color: #1a1a1a; margin-top: 0; }
+        
+        /* Zone Caméra */
+        #reader { width: 100%; border-radius: 15px; overflow: hidden; background: #000; margin-bottom: 15px; border: 3px solid #d2d2d7; }
+        #canvas-ocr { display: none; }
+
+        /* Affichage des données */
+        .info-box { background: #f8f9fa; padding: 12px; border-radius: 12px; margin-bottom: 10px; border: 1px solid #e1e4e8; }
+        .label { font-size: 10px; color: #6e6e73; text-transform: uppercase; font-weight: bold; }
+        .value { font-size: 1.1rem; font-weight: bold; color: #0071e3; margin-top: 4px; word-break: break-all; }
+
+        /* Boutons */
+        .btn-group { display: flex; gap: 10px; margin-top: 10px; }
+        button { flex: 2; padding: 20px; border-radius: 15px; border: none; font-size: 1rem; font-weight: 600; cursor: pointer; transition: 0.2s; }
+        #actionBtn { background: #0071e3; color: white; }
+        #resetBtn { background: #86868b; color: white; flex: 1; }
+        button:disabled { background: #ccc; }
+
+        #status { padding: 15px; border-radius: 12px; text-align: center; font-weight: bold; margin-top: 15px; font-size: 0.9rem; }
+        .match { background: #34c759; color: white; }
+        .error { background: #ff3b30; color: white; }
+        .pending { background: #e8f2ff; color: #0071e3; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2 id="step-title">1. Scannez le Code-Barres</h2>
+    
+    <div id="reader"></div>
+    <canvas id="canvas-ocr"></canvas>
+
+    <div class="info-box">
+        <div class="label">Référence (Code-Barres) :</div>
+        <div id="displayRef" class="value">---</div>
+    </div>
+
+    <div class="info-box">
+        <div class="label">Racking lu (OCR) :</div>
+        <div id="displayTag" class="value">---</div>
+    </div>
+
+    <div id="status" class="pending">Prêt pour le scan</div>
+
+    <div class="btn-group">
+        <button id="actionBtn" disabled>SCAN OCR</button>
+        <button id="resetBtn">RESET</button>
+    </div>
+</div>
+
+<script>
+    let html5QrCode;
+    let savedRef = "";
+    let isOcrActive = false;
+
+    const status = document.getElementById('status');
+    const displayRef = document.getElementById('displayRef');
+    const displayTag = document.getElementById('displayTag');
+    const actionBtn = document.getElementById('actionBtn');
+    const resetBtn = document.getElementById('resetBtn');
+    const stepTitle = document.getElementById('step-title');
+
+    // INITIALISATION : Démarrer le lecteur de code-barres
+    function startBarcodeScanner() {
+        html5QrCode = new Html5Qrcode("reader");
+        const config = { fps: 10, qrbox: { width: 250, height: 150 } };
+
+        html5QrCode.start({ facingMode: "environment" }, config, (decodedText) => {
+            // Succès du scan code-barres
+            savedRef = decodedText.toUpperCase().replace(/[^A-Z0-9.]/g, '');
+            displayRef.textContent = savedRef;
+            
+            // On arrête le lecteur de code-barres pour passer à l'OCR
+            html5QrCode.stop().then(() => {
+                prepareOCR();
+            });
+        });
+    }
+
+    // TRANSITION : Préparer l'interface pour l'OCR
+    function prepareOCR() {
+        isOcrActive = true;
+        stepTitle.textContent = "2. Validez le Racking";
+        status.textContent = "Référence capturée. Visez le texte.";
+        actionBtn.disabled = false;
+        
+        // On réactive la caméra simple pour l'OCR
+        const videoElement = document.querySelector('#reader video');
+        navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } })
+            .then(stream => {
+                const video = document.createElement('video');
+                video.id = "ocr-video";
+                video.style.width = "100%";
+                video.autoplay = true;
+                video.playsInline = true;
+                video.srcObject = stream;
+                document.getElementById('reader').innerHTML = '';
+                document.getElementById('reader').appendChild(video);
+            });
+    }
+
+    // ACTION : Capture OCR
+    actionBtn.addEventListener('click', async () => {
+        const video = document.getElementById('ocr-video');
+        const canvas = document.getElementById('canvas-ocr');
+        const context = canvas.getContext('2d');
+
+        actionBtn.disabled = true;
+        status.textContent = "Analyse OCR en cours...";
+
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        context.filter = 'contrast(160%) grayscale(100%)';
+        context.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+        try {
+            const result = await Tesseract.recognize(canvas, 'eng');
+            const codeLuRaw = result.data.text.trim();
+            const tagPropre = codeLuRaw.toUpperCase().replace(/[^A-Z0-9.]/g, '');
+            
+            displayTag.textContent = codeLuRaw;
+
+            if (tagPropre.includes(savedRef) || savedRef.includes(tagPropre)) {
+                status.textContent = "CONFORME ✅";
+                status.className = "match";
+                
+                // DELAIS DE 1 SECONDE AVANT RESET
+                setTimeout(resetApp, 1500);
+            } else {
+                status.textContent = "NON IDENTIQUE ❌";
+                status.className = "error";
+                actionBtn.disabled = false;
+            }
+        } catch (e) {
+            status.textContent = "Erreur de lecture.";
+            actionBtn.disabled = false;
+        }
+    });
+
+    // RESET : Tout recommencer
+    resetBtn.addEventListener('click', resetApp);
+
+    function resetApp() {
+        location.reload(); // La méthode la plus fiable sur mobile pour vider la mémoire caméra
+    }
+
+    window.onload = startBarcodeScanner;
+</script>
+
+</body>
+</html>
